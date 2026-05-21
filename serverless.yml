@@ -1,0 +1,133 @@
+service: monorepo-template
+
+build:
+  esbuild:
+    bundle: true
+    minify: true
+    sourcemap: true
+    format: cjs
+    platform: node
+    target: node22
+    outExtension:
+      .js: .cjs
+    external:
+      - "@aws-sdk/*"
+
+provider:
+  name: aws
+  runtime: nodejs22.x
+  region: ap-northeast-1
+  stage: ${opt:stage, 'dev'}
+  deploymentBucket: ${self:custom.DEPLOYMENT_BUCKET_CONFIG.${self:provider.stage}, null}
+  environment:
+    STAGE: ${self:provider.stage}
+
+custom:
+  config: ${file(serverless-config/env.${self:provider.stage}.yml)}
+  localstack:
+    stages:
+      - e2e
+    accountId: ${self:custom.config.AWS_ACCOUNT_ID, '000000000000'}
+    edgePort: ${self:custom.config.LOCALSTACK_PORT, 4566}
+    host: http://127.0.0.1
+  DEPLOYMENT_BUCKET_CONFIG:
+    e2e:
+      name: monorepo-template-e2e-deployments
+  AWS_ENDPOINT_ARGS:
+    local: "--endpoint-url ${self:custom.config.AWS_ENDPOINT_URL, ''}"
+    e2e: "--endpoint-url ${self:custom.config.AWS_ENDPOINT_URL, ''}"
+    dev: ""
+    prod: ""
+  scriptable:
+    hooks:
+      after:deploy:deploy: |
+        # 🔑 CREDENTIALS: Mock credentials for LocalStack stages
+        if [ "${self:provider.stage}" = "e2e" ]; then
+          export AWS_ACCESS_KEY_ID=test
+          export AWS_SECRET_ACCESS_KEY=test
+        fi
+
+        # 🚀 ORCHESTRATION: Stage-aware deployment logic
+        # 1. Discover then Build
+        serverless assembly:frontend --stage ${self:provider.stage}
+
+        # 2. Sync built frontend to S3 (for all stages)
+        serverless sync:frontend --stage ${self:provider.stage}
+
+        # 3. Invalidate CloudFront (only for dev and prod)
+        if [ "${self:provider.stage}" != "local" ] && [ "${self:provider.stage}" != "e2e" ]; then
+          serverless cloudfront:invalidate --stage ${self:provider.stage}
+        fi
+    commands:
+      assembly:frontend: |
+        echo "🏗️  Assembling Frontend for stage: ${self:provider.stage}"
+        
+        # 🌐 DOMAIN STRATEGY: Default to the production-parity alias domain (Dynamic from self:service)
+        export VITE_API_BASE_URL="/api"
+        
+        # 🧪 MOCK OVERRIDE: For non-deterministic environments (LocalStack/E2E), discover the gateway ID
+        if [ "${self:provider.stage}" = "local" ] || [ "${self:provider.stage}" = "e2e" ]; then
+           echo "🔍 Stage: ${self:provider.stage} detected. Discovering LocalStack API Container..."
+           API_ID=$(AWS_PAGER='' aws ${self:custom.AWS_ENDPOINT_ARGS.${self:provider.stage}, ''} apigateway get-rest-apis --region ${self:provider.region} --query "items[0].id" --output text || echo "unknown")
+           export VITE_API_BASE_URL="${self:custom.config.AWS_ENDPOINT_URL, ''}/restapis/$API_ID/${self:provider.stage}/_user_request_/api"
+           echo "📍 Mock VITE_API_BASE_URL: $VITE_API_BASE_URL"
+        fi
+
+        # 🔑 SECURE INJECTION: Resolving secrets from the master stack (All Stages)
+        export VITE_SENTRY_DSN="${self:custom.config.VARS.SENTRY_DSN, ''}"
+        export VITE_SENTRY_ENVIRONMENT="${self:provider.stage}"
+
+        echo "📍 Targeted VITE_API_BASE_URL: $VITE_API_BASE_URL"
+        echo "🦉 Sentry Shield Active: $([ -n "$VITE_SENTRY_DSN" ] && echo "YES" || echo "NO")"
+        
+        echo "🚀 Rebuilding frontend bundle with finalized build-time configuration..."
+        VITE_API_BASE_URL=$VITE_API_BASE_URL \
+        VITE_SENTRY_DSN=$VITE_SENTRY_DSN \
+        VITE_SENTRY_ENVIRONMENT=$VITE_SENTRY_ENVIRONMENT \
+        npm run build --prefix apps/frontend -- --mode ${self:provider.stage} --emptyOutDir
+      sync:frontend: |
+        aws s3 sync apps/frontend/dist s3://${self:custom.config.VARS.SITE_BUCKET}/ ${self:custom.AWS_ENDPOINT_ARGS.${self:provider.stage}, ''}
+      cloudfront:invalidate: |
+        DIST_ID=$(aws cloudfront list-distributions --query "DistributionList.Items[?contains(Origins.Items[0].DomainName, '${self:custom.config.VARS.SITE_BUCKET}')].Id" --output text || echo "")
+        if [ "$DIST_ID" != "None" ] && [ "$DIST_ID" != "" ]; then
+          aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*"
+        fi
+      deploy:localstack: |
+        export AWS_ENDPOINT_URL=${self:custom.config.AWS_ENDPOINT_URL, ''}
+        export AWS_ACCESS_KEY_ID=${self:custom.config.AWS_ACCESS_KEY_ID, 'test'}
+        export AWS_SECRET_ACCESS_KEY=${self:custom.config.AWS_SECRET_ACCESS_KEY, 'test'}
+        export AWS_DEFAULT_REGION=${self:provider.region}
+        
+        echo "📡 Probing LocalStack at $AWS_ENDPOINT_URL..."
+        ./scripts/wait-localstack.sh "$AWS_ENDPOINT_URL" || exit 1
+        
+        echo "📦 Creating Deployment bucket for ${self:provider.stage}..."
+        aws --endpoint-url "$AWS_ENDPOINT_URL" s3 mb s3://${self:custom.DEPLOYMENT_BUCKET_CONFIG.${self:provider.stage}.name, 'NOT_REQUIRED'} --region ${self:provider.region} 2>/dev/null || true
+        
+        echo "🚀 Deploying to LocalStack (${self:provider.stage})..."
+        serverless deploy --stage ${self:provider.stage}
+plugins:
+  - serverless-localstack
+  - serverless-offline
+  - serverless-scriptable-plugin
+
+package:
+  individually: true
+  patterns:
+    - "!package.json"
+
+functions:
+  healthcheck:
+    handler: apps/backend/dist/handlers/healthcheck.handler
+    events:
+      - http:
+          path: /api/healthcheck
+          method: get
+  openapi:
+    handler: apps/backend/dist/handlers/openapi.handler
+    events:
+      - http:
+          path: /api/openapi
+          method: get
+
+resources: ${file(serverless-config/resources.yml)}

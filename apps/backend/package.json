@@ -1,0 +1,20 @@
+{
+  "name": "backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "serverless offline --stage local --config ../../serverless.yml --noPrependStageInUrl --host 0.0.0.0 --httpPort 4000",
+    "build": "tsc -p tsconfig.json",
+    "type-check": "tsc --noEmit -p tsconfig.json",
+    "lint": "echo 'no lint for backend'",
+    "test": "echo 'no tests for backend'"
+  },
+  "dependencies": {
+    "@template/api-types": "^0.1.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.152",
+    "@types/node": "^22.18.10"
+  }
+}
