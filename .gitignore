@@ -1,0 +1,13 @@
+node_modules
+.turbo
+.serverless
+.e2e
+.localstack
+.localstack_e2e
+.idea
+apps/*/dist
+apps/*/node_modules
+packages/*/node_modules
+.DS_Store
+
+.env
