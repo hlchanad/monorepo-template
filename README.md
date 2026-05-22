@@ -18,6 +18,15 @@ Lean reusable monorepo template with typed backend/frontend contract, Serverless
 4. E2E(LocalStack) deploy: `npm run deploy:e2e`
 5. E2E(LocalStack) stop: `npm run e2e:stop`
 
+## Required Changes Before AWS Deploy
+
+1. Update [env.dev.yml](/Users/chanhonlun/Developments/home-scoreboard/serverless-config/env.dev.yml) and [env.prod.yml](/Users/chanhonlun/Developments/home-scoreboard/serverless-config/env.prod.yml):
+- `SITE_ALIAS_DOMAIN`
+- `ACM_CERTIFICATE_ARN_GLOBAL` (must be an ACM cert in `us-east-1`)
+2. Enable custom domains only after values are updated:
+- set `DOMAIN_ENABLED: true` in the target env file
+3. Keep `DOMAIN_ENABLED: false` if you want to deploy without custom domains first.
+
 ## Local Dev
 
 - Command: `npm run dev`
